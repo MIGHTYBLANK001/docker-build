@@ -32,7 +32,7 @@ permissions:
 
 env:
 
-  SOURCE_REPO: s12ryt/M365-Copilot2API-CE
+  SOURCE_REPO: HEXUXIU/M365-Copilot2API
 
   PACKAGE_NAME: m365-copilot2api-ce
 
