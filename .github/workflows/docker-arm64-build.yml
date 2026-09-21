@@ -1,0 +1,508 @@
+name: Docker ARM64 Build
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 每天 02:00 UTC
+    - cron: "6 2 * * *"
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+concurrency:
+  group: docker-arm64-build
+  cancel-in-progress: true
+
+
+# ============================================================
+# 配置
+#
+# 以后只修改这两个变量
+# ============================================================
+
+env:
+
+  # 上游 GitHub 仓库
+  #
+  # 支持：
+  # https://github.com/OWNER/REPOSITORY
+  #
+  # 或：
+  # OWNER/REPOSITORY
+  #
+  REPOSITORY: https://github.com/HEXUXIU/M365-Copilot2API
+
+  # 上游 Branch
+  BRANCH: main
+
+
+jobs:
+
+  # ============================================================
+  # 检查上游更新
+  # ============================================================
+
+  check-update:
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      repository: ${{ steps.config.outputs.repository }}
+      branch: ${{ steps.config.outputs.branch }}
+      package: ${{ steps.config.outputs.package }}
+      image: ${{ steps.config.outputs.image }}
+      sha: ${{ steps.check.outputs.sha }}
+
+    steps:
+
+      # --------------------------------------------------------
+      # 解析仓库
+      # --------------------------------------------------------
+
+      - name: Parse repository
+
+        id: config
+
+        shell: bash
+
+        run: |
+
+          set -e
+
+          REPOSITORY="${{ env.REPOSITORY }}"
+          BRANCH="${{ env.BRANCH }}"
+
+          # 去掉 GitHub URL
+          REPOSITORY="${REPOSITORY#https://github.com/}"
+          REPOSITORY="${REPOSITORY#http://github.com/}"
+
+          # 去掉末尾 /
+          REPOSITORY="${REPOSITORY%/}"
+
+          # 去掉 .git
+          REPOSITORY="${REPOSITORY%.git}"
+
+          # 检查 OWNER/REPOSITORY 格式
+          if [[ ! "$REPOSITORY" =~ ^[^/]+/[^/]+$ ]]; then
+            echo "ERROR: Invalid GitHub repository:"
+            echo "$REPOSITORY"
+            exit 1
+          fi
+
+          # 仓库名称
+          REPO_NAME="${REPOSITORY##*/}"
+
+          # GHCR / Docker 镜像名称统一小写
+          PACKAGE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+
+          # 当前 docker-build 仓库的 Owner
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          # 最终镜像
+          IMAGE="ghcr.io/${OWNER}/${PACKAGE}"
+
+          echo "=========================================="
+          echo "Repository : ${REPOSITORY}"
+          echo "Branch     : ${BRANCH}"
+          echo "Repo Name  : ${REPO_NAME}"
+          echo "Package    : ${PACKAGE}"
+          echo "Image      : ${IMAGE}"
+          echo "=========================================="
+
+          echo "repository=${REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "package=${PACKAGE}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+
+      # --------------------------------------------------------
+      # 获取上游最新 SHA
+      # --------------------------------------------------------
+
+      - name: Get upstream SHA
+
+        id: upstream
+
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ steps.config.outputs.repository }}
+          SOURCE_BRANCH: ${{ steps.config.outputs.branch }}
+
+        shell: bash
+
+        run: |
+
+          set -e
+
+          NEW_SHA=$(gh api \
+            "repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH}" \
+            --jq '.sha')
+
+          echo "Upstream:"
+          echo "${SOURCE_REPO}"
+
+          echo "Branch:"
+          echo "${SOURCE_BRANCH}"
+
+          echo "Latest SHA:"
+          echo "${NEW_SHA}"
+
+          echo "sha=${NEW_SHA}" >> "$GITHUB_OUTPUT"
+
+
+      # --------------------------------------------------------
+      # 恢复最近一次成功 Build 的 SHA
+      #
+      # Cache key：
+      #
+      # upstream/
+      #   OWNER-REPOSITORY/
+      #   BRANCH/
+      #   SHA
+      #
+      # restore-keys 会找到这个仓库 / Branch
+      # 最近一次保存的 SHA
+      # --------------------------------------------------------
+
+      - name: Restore build state
+
+        id: state
+
+        uses: actions/cache/restore@v4
+
+        with:
+
+          path: .upstream-state
+
+          key: upstream-${{ steps.config.outputs.repository }}-${{ steps.config.outputs.branch }}-${{ steps.upstream.outputs.sha }}
+
+          restore-keys: |
+            upstream-${{ steps.config.outputs.repository }}-${{ steps.config.outputs.branch }}-
+
+
+      # --------------------------------------------------------
+      # 判断是否需要 Build
+      # --------------------------------------------------------
+
+      - name: Check update
+
+        id: check
+
+        shell: bash
+
+        run: |
+
+          set -e
+
+          NEW_SHA="${{ steps.upstream.outputs.sha }}"
+
+          OLD_SHA=""
+
+          if [ -f .upstream-state/sha ]; then
+            OLD_SHA=$(cat .upstream-state/sha)
+          fi
+
+          echo "=========================================="
+          echo "Previous build SHA:"
+          echo "${OLD_SHA:-<none>}"
+          echo ""
+          echo "Current upstream SHA:"
+          echo "${NEW_SHA}"
+          echo "=========================================="
+
+
+          # ----------------------------------------------------
+          # 手动运行：
+          # 强制 Build
+          # ----------------------------------------------------
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+
+            echo "Manual workflow dispatch."
+            echo "Force build."
+
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            exit 0
+
+          fi
+
+
+          # ----------------------------------------------------
+          # 定时运行：
+          # 比较 SHA
+          # ----------------------------------------------------
+
+          if [ "$NEW_SHA" = "$OLD_SHA" ]; then
+
+            echo "No upstream changes."
+            echo "Skip build."
+
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+
+          else
+
+            echo "Upstream changed."
+            echo "Build required."
+
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          fi
+
+
+      # --------------------------------------------------------
+      # 输出最终状态
+      # --------------------------------------------------------
+
+      - name: Summary
+
+        shell: bash
+
+        run: |
+
+          echo "=========================================="
+          echo "Repository : ${{ steps.config.outputs.repository }}"
+          echo "Branch     : ${{ steps.config.outputs.branch }}"
+          echo "Package    : ${{ steps.config.outputs.package }}"
+          echo "Image      : ${{ steps.config.outputs.image }}"
+          echo "SHA        : ${{ steps.upstream.outputs.sha }}"
+          echo "Changed    : ${{ steps.check.outputs.changed }}"
+          echo "=========================================="
+
+
+  # ============================================================
+  # ARM64 Build
+  # ============================================================
+
+  build:
+
+    needs: check-update
+
+    if: needs.check-update.outputs.changed == 'true'
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout 当前 docker-build 仓库
+      # --------------------------------------------------------
+
+      - name: Checkout
+
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # Clone 上游仓库
+      # --------------------------------------------------------
+
+      - name: Clone upstream
+
+        env:
+          SOURCE_REPO: ${{ needs.check-update.outputs.repository }}
+          SOURCE_BRANCH: ${{ needs.check-update.outputs.branch }}
+
+        shell: bash
+
+        run: |
+
+          set -e
+
+          echo "Repository:"
+          echo "${SOURCE_REPO}"
+
+          echo "Branch:"
+          echo "${SOURCE_BRANCH}"
+
+          git clone \
+            --depth=1 \
+            --branch "${SOURCE_BRANCH}" \
+            --single-branch \
+            "https://github.com/${SOURCE_REPO}.git" \
+            source
+
+
+      # --------------------------------------------------------
+      # 显示上游版本
+      # --------------------------------------------------------
+
+      - name: Show upstream commit
+
+        working-directory: source
+
+        shell: bash
+
+        run: |
+
+          echo "Commit:"
+          git rev-parse HEAD
+
+          echo ""
+
+          echo "Commit info:"
+          git log -1 --oneline
+
+
+      # --------------------------------------------------------
+      # QEMU
+      # --------------------------------------------------------
+
+      - name: Setup QEMU
+
+        uses: docker/setup-qemu-action@v3
+
+
+      # --------------------------------------------------------
+      # Buildx
+      # --------------------------------------------------------
+
+      - name: Setup Buildx
+
+        uses: docker/setup-buildx-action@v3
+
+
+      # --------------------------------------------------------
+      # GHCR Login
+      # --------------------------------------------------------
+
+      - name: Login GHCR
+
+        uses: docker/login-action@v3
+
+        with:
+
+          registry: ghcr.io
+
+          username: ${{ github.actor }}
+
+          password: ${{ github.token }}
+
+
+      # --------------------------------------------------------
+      # ARM64 Build & Push
+      # --------------------------------------------------------
+
+      - name: Build and Push ARM64
+
+        uses: docker/build-push-action@v6
+
+        with:
+
+          # 上游源码
+          context: ./source
+
+          # 上游 Dockerfile
+          file: ./source/Dockerfile
+
+          # ARM64
+          platforms: linux/arm64
+
+          # Push
+          push: true
+
+          # 镜像
+          tags: |
+            ${{ needs.check-update.outputs.image }}:latest
+            ${{ needs.check-update.outputs.image }}:${{ needs.check-update.outputs.sha }}
+
+          # Build cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+
+      # --------------------------------------------------------
+      # Build 成功后保存 SHA
+      #
+      # 注意：
+      # 只有 Build 成功才能走到这里。
+      #
+      # 因此保存的是：
+      # "最后一次成功构建的上游 SHA"
+      # --------------------------------------------------------
+
+      - name: Save upstream build state
+
+        shell: bash
+
+        run: |
+
+          set -e
+
+          mkdir -p .upstream-state
+
+          echo "${{ needs.check-update.outputs.sha }}" \
+            > .upstream-state/sha
+
+          echo "Saved upstream SHA:"
+          cat .upstream-state/sha
+
+
+      # --------------------------------------------------------
+      # 保存 Cache
+      #
+      # SHA 放在 key 中，因此每个上游版本一个 cache。
+      # 不需要覆盖已有 cache。
+      # --------------------------------------------------------
+
+      - name: Cache upstream build state
+
+        uses: actions/cache/save@v4
+
+        with:
+
+          path: .upstream-state
+
+          key: upstream-${{ needs.check-update.outputs.repository }}-${{ needs.check-update.outputs.branch }}-${{ needs.check-update.outputs.sha }}
+
+
+  # ============================================================
+  # Cleanup GHCR
+  # ============================================================
+
+  cleanup:
+
+    needs:
+      - check-update
+      - build
+
+    if: success()
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------------
+      # 等待 GHCR Package 同步
+      # --------------------------------------------------------
+
+      - name: Wait for GHCR
+
+        run: |
+
+          sleep 120
+
+
+      # --------------------------------------------------------
+      # 保留最近 3 个版本
+      # --------------------------------------------------------
+
+      - name: Cleanup GHCR versions
+
+        uses: actions/delete-package-versions@v5
+
+        with:
+
+          package-name: ${{ needs.check-update.outputs.package }}
+
+          package-type: container
+
+          min-versions-to-keep: 3
+
+          delete-only-untagged-versions: false
+
+          token: ${{ github.token }}
