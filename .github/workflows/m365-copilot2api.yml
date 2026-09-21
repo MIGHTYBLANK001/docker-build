@@ -1,4 +1,4 @@
-name: Docker ARM64 Build
+name: Docker ARM64 Build M365-Copilot2API
 
 on:
   workflow_dispatch:
