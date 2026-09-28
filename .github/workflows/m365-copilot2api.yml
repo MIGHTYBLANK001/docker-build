@@ -29,7 +29,7 @@ env:
   REPOSITORY: https://github.com/HEXUXIU/M365-Copilot2API
 
   # 上游 Branch
-  BRANCH: dev-pr-integration
+  BRANCH: main
 
 
 jobs:
