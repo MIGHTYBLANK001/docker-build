@@ -1,0 +1,23 @@
+name: Delete Old Workflow Runs
+
+on:
+  # 允许手动触发测试
+  workflow_dispatch:
+  schedule:
+    - cron: '15 */6 * * *'
+
+permissions:
+  actions: write
+
+jobs:
+  del_runs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          # 保留最近多少次运行记录（默认保留最近的 3 次记录，防止列表完全空白）
+          retain_days: 0
+          keep_minimum_runs: 1
