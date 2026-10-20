@@ -26,8 +26,8 @@ concurrency:
 env:
 
   # 上游 GitHub 仓库
-  REPOSITORY: https://github.com/HEXUXIU/M365-Copilot2API
-
+  #REPOSITORY: https://github.com/HEXUXIU/M365-Copilot2API 
+  REPOSITORY: https://github.com/moblc/M365-Copilot2API
   # 上游 Branch
   BRANCH: main
 
