@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 每天 02:00 UTC
-    - cron: "0 2 * * *"
+    - cron: '5 */6 * * *'
 
 permissions:
   contents: read
